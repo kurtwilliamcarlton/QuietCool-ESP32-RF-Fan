@@ -1,0 +1,1793 @@
+# FACTORY RESET: Web/HA UI 10-second countdown only.
+# Physical BOOT and RST buttons are not assigned factory-reset actions.
+# OLED: four diagnostic views, auto-rotate by default every 10 seconds.
+# NETWORK: connected AP BSSID (MAC), channel and signal on OLED and web UI.
+# V5.5 WEB-ONLY: Controller Health Dashboard at top of existing web UI.
+# Existing RF health, history, Wi-Fi events, ESP32 health and OLED settings retained.
+# NO new diagnostic data is drawn on the physical OLED.
+# WEB: six live OLED text rows on the ORIGINAL ESPHome home page; no added component.
+# WEB MIRROR: keeps rotating even when the physical OLED is switched off.
+# Pairing / Wi-Fi fallback / factory-reset screens take priority.
+# ============================================================
+# QuietCool Whole House Fan Controller
+# Board: LILYGO / TTGO LoRa32 V2.1
+# Radio: SX1278 433.920 MHz
+#
+# REQUIRED FOLDER:
+# /config/esphome/quietcool-source/
+# ============================================================
+
+esphome:
+  name: quietcool
+  friendly_name: QuietCool
+  min_version: 2026.7.0
+
+  includes:
+    - quietcool-source/components/quietcool/
+
+  on_boot:
+    priority: 600
+    then:
+      - lambda: |-
+          id(boot_time_ms) = millis();
+
+
+# ============================================================
+# ESP32
+# ============================================================
+
+esp32:
+  board: ttgo-lora32-v21
+
+  framework:
+    type: esp-idf
+
+    advanced:
+      loop_task_stack_size: 16384
+
+
+# ============================================================
+# LOCAL QUIETCOOL COMPONENT
+# ============================================================
+
+external_components:
+  - source:
+      type: local
+      path: quietcool-source/components
+    components:
+      - quietcool
+
+
+# ============================================================
+# LOGGER
+# ============================================================
+
+logger:
+  level: DEBUG
+
+# Native ESPHome health reporting; no custom component needed.
+debug:
+  update_interval: 30s
+
+
+# ============================================================
+# HOME ASSISTANT API
+# ============================================================
+
+api:
+  id: quietcool_api
+
+
+# ============================================================
+# OTA
+# ============================================================
+
+ota:
+  - platform: esphome
+
+
+# ============================================================
+# WEB UI
+#
+# Open:
+# http://quietcool.local/
+# or:
+# http://<ESP32-IP>/
+#
+# Login:
+# Username: set in secrets.yaml (not committed)
+# Password: set in secrets.yaml (not committed)
+# ============================================================
+
+web_server:
+  port: 80
+  version: 3
+  local: true
+  # All new v5.4 diagnostics use the ORIGINAL web page only.
+  sorting_groups:
+    - id: qc_health_dashboard_group
+      name: "QuietCool Controller Health Dashboard"
+      sorting_weight: -110
+    - id: oled_mirror_group
+      name: "OLED Mirror (Live)"
+      sorting_weight: -100
+    - id: qc_rf_health_group
+      name: "RF Health & Recovery"
+      sorting_weight: -90
+    - id: qc_rf_history_group
+      name: "RF Command History (Since Boot)"
+      sorting_weight: -80
+    - id: qc_wifi_history_group
+      name: "WiFi Connection History (Since Boot)"
+      sorting_weight: -70
+    - id: qc_system_health_group
+      name: "ESP32 System Health"
+      sorting_weight: -60
+    - id: qc_oled_settings_group
+      name: "OLED Settings"
+      sorting_weight: -50
+
+  auth:
+    type: digest
+    username: !secret quietcool_web_username
+    password: !secret quietcool_web_password
+
+
+# ============================================================
+# WIFI
+# ============================================================
+
+wifi:
+  id: wifi_component
+
+  # Wi-Fi is configured by the new owner using the captive portal.
+  # Do not bake personal Wi-Fi credentials into firmware: ESPHome's
+  # factory_reset only erases saved preferences, not firmware constants.
+  # On first flashing this variant, use the fallback AP to configure Wi-Fi.
+  ap:
+    ssid: "QuietCool Fallback"
+    password: !secret quietcool_fallback_password
+    ap_timeout: 30s
+
+  # UI-only diagnostic event counters; neither alters the Wi-Fi connection.
+  on_connect:
+    then:
+      - lambda: |-
+          id(qc_wifi_connect_count)++;
+          id(qc_wifi_ever_connected) = true;
+          const std::string msg = "Connected at uptime " +
+            std::to_string(millis() / 1000U) + "s";
+          if (id(qc_wifi_event_2).has_state())
+            id(qc_wifi_event_3).publish_state(id(qc_wifi_event_2).state);
+          if (id(qc_wifi_event_1).has_state())
+            id(qc_wifi_event_2).publish_state(id(qc_wifi_event_1).state);
+          id(qc_wifi_event_1).publish_state(msg);
+
+  on_disconnect:
+    then:
+      - lambda: |-
+          // Skip startup attempts that never established a Wi-Fi connection.
+          if (!id(qc_wifi_ever_connected)) return;
+          id(qc_wifi_disconnect_count)++;
+          id(qc_wifi_last_disconnect_ms) = millis();
+          const std::string msg = "Disconnected at uptime " +
+            std::to_string(millis() / 1000U) + "s";
+          if (id(qc_wifi_event_2).has_state())
+            id(qc_wifi_event_3).publish_state(id(qc_wifi_event_2).state);
+          if (id(qc_wifi_event_1).has_state())
+            id(qc_wifi_event_2).publish_state(id(qc_wifi_event_1).state);
+          id(qc_wifi_event_1).publish_state(msg);
+
+
+# ============================================================
+# CAPTIVE PORTAL
+# ============================================================
+
+captive_portal:
+
+
+# ============================================================
+# I2C / OLED
+# ============================================================
+
+i2c:
+  sda: GPIO21
+  scl: GPIO22
+  frequency: 400kHz
+
+
+# ============================================================
+# SPI
+# ============================================================
+
+spi:
+  clk_pin: GPIO5
+  miso_pin: GPIO19
+  mosi_pin: GPIO27
+
+
+# ============================================================
+# GLOBALS
+# ============================================================
+
+globals:
+
+  - id: boot_time_ms
+    type: uint32_t
+    restore_value: false
+    initial_value: '0'
+
+  - id: last_rx_ms
+    type: uint32_t
+    restore_value: false
+    initial_value: '0'
+
+  - id: last_tx_ms
+    type: uint32_t
+    restore_value: false
+    initial_value: '0'
+
+  - id: rx_frame_count
+    type: uint32_t
+    restore_value: false
+    initial_value: '0'
+
+  - id: pairing_active
+    type: bool
+    restore_value: false
+    initial_value: 'false'
+
+  - id: pairing_started_ms
+    type: uint32_t
+    restore_value: false
+    initial_value: '0'
+
+  # 0 = normal
+  # 1 = learned successfully
+  # 2 = pairing timed out
+  # 3 = already paired
+  - id: pairing_result
+    type: int
+    restore_value: false
+    initial_value: '0'
+
+  - id: pairing_result_started_ms
+    type: uint32_t
+    restore_value: false
+    initial_value: '0'
+
+
+  # Active after a single press of the factory-reset button in the Web/HA UI.
+  - id: web_reset_active
+    type: bool
+    restore_value: false
+    initial_value: 'false'
+
+  - id: web_reset_started_ms
+    type: uint32_t
+    restore_value: false
+    initial_value: '0'
+
+  # RF traffic is tracked ONLY after the QuietCool protocol validator accepts it.
+  - id: qc_last_valid_rx_ms
+    type: uint32_t
+    restore_value: false
+    initial_value: '0'
+
+  - id: qc_prev_valid_rx_count
+    type: float
+    restore_value: false
+    initial_value: '0'
+
+  # Command history is RAM-only and intentionally clears at every reboot.
+  - id: qc_history_prefix
+    type: std::string
+    restore_value: false
+    initial_value: '""'
+
+  - id: qc_history_started_ms
+    type: uint32_t
+    restore_value: false
+    initial_value: '0'
+
+  # Wi-Fi event counts and recent event text clear at each reboot.
+  - id: qc_wifi_connect_count
+    type: uint32_t
+    restore_value: false
+    initial_value: '0'
+
+  - id: qc_wifi_disconnect_count
+    type: uint32_t
+    restore_value: false
+    initial_value: '0'
+
+  - id: qc_wifi_last_disconnect_ms
+    type: uint32_t
+    restore_value: false
+    initial_value: '0'
+
+  - id: qc_wifi_ever_connected
+    type: bool
+    restore_value: false
+    initial_value: 'false'
+
+
+# ============================================================
+# SX1278 RADIO
+# ============================================================
+
+sx127x:
+  id: fan_radio
+
+  cs_pin: GPIO18
+  rst_pin: GPIO23
+  dio0_pin: GPIO26
+
+  frequency: 433920000
+
+  modulation: FSK
+  bandwidth: 50_0kHz
+
+  packet_mode: true
+  bitsync: true
+
+  bitrate: 2400
+  deviation: 10000
+
+  shaping: NONE
+
+  sync_value:
+    - 0x2D
+    - 0xD4
+
+  payload_length: 0
+  crc_enable: false
+
+  preamble_size: 8
+  preamble_polarity: 0xAA
+  preamble_errors: 0
+
+  pa_pin: BOOST
+  pa_power: 17
+
+  rx_start: true
+
+  on_packet:
+    - lambda: |-
+        id(last_rx_ms) = millis();
+        id(rx_frame_count) = id(rx_frame_count) + 1;
+
+        ESP_LOGD(
+          "qc.rx",
+          "RX #%u: %u bytes: %s",
+          (unsigned) id(rx_frame_count),
+          (unsigned) x.size(),
+          format_hex_pretty(x).c_str()
+        );
+
+    - quietcool.on_packet:
+        id: quietcool_controller
+        packet: received_packet
+
+
+# ============================================================
+# QUIETCOOL CONTROLLER
+# ============================================================
+
+quietcool:
+  id: quietcool_controller
+
+  sender_seed: 0
+
+  radio:
+    type: sx127x
+    id: fan_radio
+
+
+# ============================================================
+# FAN
+# ============================================================
+
+fan:
+  - platform: quietcool
+    id: whole_house_fan
+    controller_id: quietcool_controller
+    name: "QuietCool Fan"
+
+    web_server:
+      sorting_weight: 1
+
+
+# ============================================================
+# FAN TIMER
+# ============================================================
+
+select:
+  - platform: quietcool
+    id: fan_timer_select
+    controller_id: quietcool_controller
+    name: "Fan Timer"
+
+    web_server:
+      sorting_weight: 2
+
+  # Choose a fixed page when "OLED Auto Rotate" is OFF.
+  - platform: template
+    id: oled_manual_page
+    name: "OLED Page"
+    icon: "mdi:monitor-dashboard"
+    options:
+      - "Fan Status"
+      - "RF Diagnostics"
+      - "Network"
+      - "Command Status"
+    optimistic: true
+    restore_value: true
+    initial_option: "Fan Status"
+    web_server:
+      sorting_group_id: qc_oled_settings_group
+      sorting_weight: 2
+
+  # Changes the duration of EACH of the four existing OLED pages.
+  # The web mirror follows this timer even when the physical OLED is off.
+  - platform: template
+    id: qc_oled_rotate_interval
+    name: "OLED Rotation Interval"
+    icon: "mdi:timer-cog-outline"
+    options:
+      - "5 seconds"
+      - "10 seconds"
+      - "15 seconds"
+      - "30 seconds"
+    optimistic: true
+    restore_value: true
+    initial_option: "10 seconds"
+    web_server:
+      sorting_group_id: qc_oled_settings_group
+      sorting_weight: 3
+
+
+# ============================================================
+# BINARY SENSORS
+# ============================================================
+
+binary_sensor:
+  - platform: quietcool
+    id: fan_state_known
+    controller_id: quietcool_controller
+    kind: state_known
+    name: "Fan State Known"
+
+    web_server:
+      sorting_weight: 20
+
+  - platform: quietcool
+    id: fan_timer_program_known
+    controller_id: quietcool_controller
+    kind: timer_program_known
+    name: "Timer State Known"
+
+    web_server:
+      sorting_weight: 21
+
+  - platform: quietcool
+    id: fan_timer_remaining_known
+    controller_id: quietcool_controller
+    kind: timer_remaining_known
+    name: "Fan Timer Remaining Known"
+
+    web_server:
+      sorting_weight: 22
+
+  - platform: quietcool
+    id: fan_confirmed_off
+    controller_id: quietcool_controller
+    kind: confirmed_off
+    name: "Fan Confirmed Off"
+
+    web_server:
+      sorting_weight: 23
+
+  - platform: quietcool
+    id: controller_fault
+    controller_id: quietcool_controller
+    kind: controller_fault
+    device_class: problem
+    name: "Controller Fault"
+
+    web_server:
+      sorting_weight: 24
+
+
+# ============================================================
+# TEXT SENSORS
+# ============================================================
+
+text_sensor:
+  # Read-only live text mirror, refreshed from the SAME OLED display lambda.
+  # Native entities appear in a group at the top of the EXISTING web page.
+  # No additional page, CSS, JS, or custom component is required.
+  - platform: template
+    id: oled_mirror_header
+    name: "OLED Header"
+    icon: "mdi:monitor-dashboard"
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: oled_mirror_group
+      sorting_weight: 0
+
+  - platform: template
+    id: oled_mirror_row_1
+    name: "OLED Row 1"
+    icon: "mdi:monitor-dashboard"
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: oled_mirror_group
+      sorting_weight: 1
+
+  - platform: template
+    id: oled_mirror_row_2
+    name: "OLED Row 2"
+    icon: "mdi:monitor-dashboard"
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: oled_mirror_group
+      sorting_weight: 2
+
+  - platform: template
+    id: oled_mirror_row_3
+    name: "OLED Row 3"
+    icon: "mdi:monitor-dashboard"
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: oled_mirror_group
+      sorting_weight: 3
+
+  - platform: template
+    id: oled_mirror_row_4
+    name: "OLED Row 4"
+    icon: "mdi:monitor-dashboard"
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: oled_mirror_group
+      sorting_weight: 4
+
+  - platform: template
+    id: oled_mirror_row_5
+    name: "OLED Row 5"
+    icon: "mdi:monitor-dashboard"
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: oled_mirror_group
+      sorting_weight: 5
+
+  # Helps verify that the new firmware was actually flashed.
+  - platform: template
+    name: "Factory Reset Firmware Version"
+    entity_category: diagnostic
+    lambda: |-
+      return {"QC Controller Health v5.5"};
+    update_interval: 60s
+    web_server:
+      sorting_weight: 96
+
+  # ============================================================
+  # V5.5 HEALTH DASHBOARD - WEB UI ONLY
+  # These sensors do NOT affect physical OLED drawing, RF commands,
+  # WiFi setup, pairing or reset behaviors. Read-only status.
+  # "No recent RF" is informational, NOT a failure condition.
+  # ============================================================
+
+  - platform: template
+    id: qc_health_overall
+    name: "Overall Health"
+    icon: "mdi:heart-pulse"
+    entity_category: diagnostic
+    update_interval: 5s
+    lambda: |-
+      if (!id(wifi_component).is_connected())
+        return {"SETUP: WiFi not connected"};
+      if (id(controller_fault).has_state() && id(controller_fault).state)
+        return {"ATTENTION: Controller reports a fault"};
+      if (id(command_status).has_state()) {
+        const std::string &s = id(command_status).state;
+        if (s == "pending") return {"WAITING: Fan command pending"};
+        if (s.find("timeout") != std::string::npos ||
+            s.find("fail") != std::string::npos ||
+            s.find("reject") != std::string::npos ||
+            s.find("error") != std::string::npos ||
+            s.find("unconfirm") != std::string::npos)
+          return {"ATTENTION: Last command needs checking"};
+      }
+      if (id(wifi_signal_sensor).has_state() &&
+          id(wifi_signal_sensor).state <= -80.0f)
+        return {"ATTENTION: Weak WiFi signal"};
+      if (id(qc_debug_free_heap).has_state() &&
+          id(qc_debug_free_heap).state < 24000.0f)
+        return {"ATTENTION: Low free heap"};
+      if (!id(controller_fault).has_state())
+        return {"MONITORING: Fault status not yet available"};
+      if (!id(fan_state_known).has_state() || !id(fan_state_known).state)
+        return {"MONITORING: Fan state not yet verified"};
+      if (!id(command_status).has_state())
+        return {"MONITORING: Command status unavailable"};
+      return {"HEALTHY: No monitored issues detected"};
+    web_server:
+      sorting_group_id: qc_health_dashboard_group
+      sorting_weight: 0
+
+  - platform: template
+    name: "WiFi Health"
+    icon: "mdi:wifi"
+    entity_category: diagnostic
+    update_interval: 10s
+    lambda: |-
+      if (!id(wifi_component).is_connected()) return {"Disconnected / setup mode"};
+      if (!id(wifi_signal_sensor).has_state()) return {"Connected; measuring signal"};
+      const int rssi = (int) id(wifi_signal_sensor).state;
+      const char *label = rssi >= -60 ? "Strong" : rssi >= -70 ? "Good"
+                         : rssi > -80 ? "Fair" : "Weak";
+      return {"Connected | " + std::to_string(rssi) + " dBm | " + label};
+    web_server:
+      sorting_group_id: qc_health_dashboard_group
+      sorting_weight: 1
+
+  - platform: template
+    name: "RF Radio Health"
+    icon: "mdi:radio-tower"
+    entity_category: diagnostic
+    update_interval: 10s
+    lambda: |-
+      if (id(controller_fault).has_state() && id(controller_fault).state)
+        return {"Controller fault; check RF diagnostics"};
+      if (id(command_status).has_state() && id(command_status).state == "pending")
+        return {"Command pending - awaiting evidence"};
+      if (!id(qc_last_valid_rx_ms))
+        return {"No validated RX yet (not necessarily a fault)"};
+      const uint32_t age = (millis() - id(qc_last_valid_rx_ms)) / 1000UL;
+      return {"Valid RF RX " + std::to_string(age) + "s ago; idle is normal"};
+    web_server:
+      sorting_group_id: qc_health_dashboard_group
+      sorting_weight: 2
+
+  - platform: template
+    name: "Fan State Confidence"
+    icon: "mdi:fan"
+    entity_category: diagnostic
+    update_interval: 5s
+    lambda: |-
+      if (!id(fan_state_known).has_state() || !id(fan_state_known).state)
+        return {"UNKNOWN - fan state not verified"};
+      if (id(fan_confirmed_off).has_state() && id(fan_confirmed_off).state)
+        return {"Confirmed OFF"};
+      if (id(whole_house_fan).state)
+        return {"Known ON | speed " + std::to_string((int)id(whole_house_fan).speed)};
+      return {"Known OFF | confirmation evidence limited"};
+    web_server:
+      sorting_group_id: qc_health_dashboard_group
+      sorting_weight: 3
+
+  - platform: template
+    name: "Last Command Result"
+    icon: "mdi:check-network-outline"
+    entity_category: diagnostic
+    update_interval: 5s
+    lambda: |-
+      const std::string command = id(last_tx_command_text).has_state()
+        ? id(last_tx_command_text).state : "none yet";
+      const std::string status = id(command_status).has_state()
+        ? id(command_status).state : "unavailable";
+      return {"TX: " + command.substr(0, 46) + " | status: " + status.substr(0, 36)};
+    web_server:
+      sorting_group_id: qc_health_dashboard_group
+      sorting_weight: 4
+
+  - platform: template
+    name: "Connected Access Point Summary"
+    icon: "mdi:access-point-network"
+    entity_category: diagnostic
+    update_interval: 15s
+    lambda: |-
+      if (!id(wifi_component).is_connected()) return {"Not connected to an AP"};
+      const std::string ap = id(wifi_connected_bssid).has_state()
+        ? id(wifi_connected_bssid).state : "Unknown BSSID";
+      const std::string channel = id(wifi_connected_channel).has_state()
+        ? std::to_string((int)id(wifi_connected_channel).state) : "?";
+      return {"BSSID: " + ap + " | Channel: " + channel};
+    web_server:
+      sorting_group_id: qc_health_dashboard_group
+      sorting_weight: 5
+
+  - platform: template
+    name: "ESP32 Resource Health"
+    icon: "mdi:memory"
+    entity_category: diagnostic
+    update_interval: 15s
+    lambda: |-
+      if (!id(qc_debug_free_heap).has_state())
+        return {"Waiting for ESP32 health measurements"};
+      const int free_kb = (int)(id(qc_debug_free_heap).state / 1024.0f);
+      const std::string loop = id(qc_debug_loop_ms).has_state()
+        ? std::to_string((int)id(qc_debug_loop_ms).state) + " ms"
+        : "measuring";
+      return {"Free heap: " + std::to_string(free_kb) + " KiB | Max loop: " + loop};
+    web_server:
+      sorting_group_id: qc_health_dashboard_group
+      sorting_weight: 6
+
+  - platform: template
+    name: "Suggested Next Action"
+    icon: "mdi:lightbulb-on-outline"
+    entity_category: diagnostic
+    update_interval: 10s
+    lambda: |-
+      if (!id(wifi_component).is_connected())
+        return {"Use QuietCool Fallback to configure WiFi"};
+      if (id(controller_fault).has_state() && id(controller_fault).state)
+        return {"Check Controller Fault and ESPHome logs"};
+      if (id(command_status).has_state()) {
+        const auto &s = id(command_status).state;
+        if (s == "pending") return {"Wait for command confirmation"};
+        if (s.find("timeout") != std::string::npos ||
+            s.find("fail") != std::string::npos ||
+            s.find("reject") != std::string::npos ||
+            s.find("error") != std::string::npos ||
+            s.find("unconfirm") != std::string::npos)
+          return {"Use Refresh Fan State; inspect RF diagnostics"};
+      }
+      if (id(wifi_signal_sensor).has_state() &&
+          id(wifi_signal_sensor).state <= -80.0f)
+        return {"Improve WiFi coverage or AP placement"};
+      if (id(qc_debug_free_heap).has_state() &&
+          id(qc_debug_free_heap).state < 24000.0f)
+        return {"Check free heap and recent ESPHome logs"};
+      if (!id(fan_state_known).has_state() || !id(fan_state_known).state)
+        return {"Use Refresh Fan State to verify the fan"};
+      return {"No immediate action; monitor normally"};
+    web_server:
+      sorting_group_id: qc_health_dashboard_group
+      sorting_weight: 7
+
+  # V5.4 WEB-ONLY diagnostic entities: not referenced by OLED drawing code.
+  - platform: template
+    name: "RF Communication Health"
+    icon: "mdi:radio-tower"
+    entity_category: diagnostic
+    update_interval: 10s
+    lambda: |-
+      if (id(controller_fault).has_state() && id(controller_fault).state)
+        return {"CONTROLLER FAULT"};
+      if (id(command_status).has_state()) {
+        const auto &v = id(command_status).state;
+        if (v == "pending") return {"Command pending - awaiting evidence"};
+        if (v.find("timeout") != std::string::npos ||
+            v.find("fail") != std::string::npos ||
+            v.find("reject") != std::string::npos)
+          return {"Command needs attention: " + v};
+      }
+      if (!id(qc_last_valid_rx_ms))
+        return {"No valid RF received yet - idle is not a fault"};
+      const uint32_t age = (millis() - id(qc_last_valid_rx_ms)) / 1000UL;
+      if (age < 60) return {"Valid RF received recently"};
+      return {"RF idle " + std::to_string(age) + "s - not necessarily a fault"};
+    web_server:
+      sorting_group_id: qc_rf_health_group
+      sorting_weight: 0
+
+  - platform: template
+    name: "RF Recovery Policy"
+    entity_category: diagnostic
+    icon: "mdi:shield-check-outline"
+    lambda: |-
+      return {"Manual refresh only; automatic TX retries disabled"};
+    update_interval: 60s
+    web_server:
+      sorting_group_id: qc_rf_health_group
+      sorting_weight: 1
+
+  - platform: template
+    id: qc_rf_history_1
+    name: "Recent Command 1 (Newest)"
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: qc_rf_history_group
+      sorting_weight: 1
+
+  - platform: template
+    id: qc_rf_history_2
+    name: "Recent Command 2"
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: qc_rf_history_group
+      sorting_weight: 2
+
+  - platform: template
+    id: qc_rf_history_3
+    name: "Recent Command 3"
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: qc_rf_history_group
+      sorting_weight: 3
+
+  - platform: template
+    id: qc_rf_history_4
+    name: "Recent Command 4"
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: qc_rf_history_group
+      sorting_weight: 4
+
+  - platform: template
+    id: qc_rf_history_5
+    name: "Recent Command 5"
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: qc_rf_history_group
+      sorting_weight: 5
+
+  - platform: template
+    id: qc_wifi_event_1
+    name: "WiFi Event 1 (Newest)"
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: qc_wifi_history_group
+      sorting_weight: 5
+
+  - platform: template
+    id: qc_wifi_event_2
+    name: "WiFi Event 2"
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: qc_wifi_history_group
+      sorting_weight: 6
+
+  - platform: template
+    id: qc_wifi_event_3
+    name: "WiFi Event 3"
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: qc_wifi_history_group
+      sorting_weight: 7
+
+  - platform: template
+    name: "WiFi Last Disconnect Age"
+    icon: "mdi:wifi-alert"
+    entity_category: diagnostic
+    update_interval: 15s
+    lambda: |-
+      if (id(qc_wifi_last_disconnect_ms) == 0)
+        return {"No disconnect since boot"};
+      return {std::to_string((millis() - id(qc_wifi_last_disconnect_ms)) / 1000UL) + "s ago"};
+    web_server:
+      sorting_group_id: qc_wifi_history_group
+      sorting_weight: 4
+
+  # ESPHome's standard on_disconnect automation does not supply the reason code.
+  - platform: template
+    name: "WiFi Disconnect Reason"
+    entity_category: diagnostic
+    update_interval: 60s
+    lambda: |-
+      return {"See ESPHome log for driver reason"};
+    web_server:
+      sorting_group_id: qc_wifi_history_group
+      sorting_weight: 8
+
+  - platform: debug
+    reset_reason:
+      name: "Last ESP32 Reset Reason"
+      entity_category: diagnostic
+      web_server:
+        sorting_group_id: qc_system_health_group
+        sorting_weight: 0
+
+  - platform: quietcool
+    id: command_status
+    controller_id: quietcool_controller
+    kind: command_status
+    name: "Command Confirmation Status"
+
+    web_server:
+      sorting_weight: 10
+
+    on_value:
+      then:
+        - lambda: |-
+            if (x == "pending") {
+              id(last_tx_ms) = millis();
+            }
+            if (!id(qc_history_prefix).empty() && x != "idle" &&
+                (uint32_t)(millis() - id(qc_history_started_ms)) < 120000UL) {
+              const std::string result = id(qc_history_prefix) + " -> " + x;
+              if (!id(qc_rf_history_1).has_state() ||
+                  id(qc_rf_history_1).state != result)
+                id(qc_rf_history_1).publish_state(result);
+            }
+
+  - platform: quietcool
+    id: evidence_source
+    controller_id: quietcool_controller
+    kind: evidence_source
+    name: "Fan Evidence Source"
+
+    web_server:
+      sorting_weight: 11
+
+  - platform: quietcool
+    id: remote_sender_id
+    controller_id: quietcool_controller
+    kind: remote_sender_id
+    name: "Remote Sender ID"
+
+    web_server:
+      sorting_weight: 9
+
+    on_value:
+      then:
+        - lambda: |-
+            if (id(pairing_active)) {
+              if (x.find("CB") != std::string::npos) {
+                id(pairing_active) = false;
+                id(pairing_result) = 1;
+                id(pairing_result_started_ms) = millis();
+              }
+            }
+
+  - platform: quietcool
+    id: last_tx_command_text
+    controller_id: quietcool_controller
+    kind: last_tx_command
+    name: "Last TX Command"
+    disabled_by_default: true
+    on_value:
+      then:
+        - lambda: |-
+            if (x.empty() || x == "unknown") return;
+            // The component reports TX commands; keep the latest five in RAM.
+            if (id(qc_rf_history_4).has_state())
+              id(qc_rf_history_5).publish_state(id(qc_rf_history_4).state);
+            if (id(qc_rf_history_3).has_state())
+              id(qc_rf_history_4).publish_state(id(qc_rf_history_3).state);
+            if (id(qc_rf_history_2).has_state())
+              id(qc_rf_history_3).publish_state(id(qc_rf_history_2).state);
+            if (id(qc_rf_history_1).has_state())
+              id(qc_rf_history_2).publish_state(id(qc_rf_history_1).state);
+            id(qc_history_started_ms) = millis();
+            id(qc_history_prefix) = "Uptime " + std::to_string(millis()/1000U)
+              + "s: " + x.substr(0, 70);
+            id(qc_rf_history_1).publish_state(id(qc_history_prefix) + " -> TX observed");
+
+  - platform: quietcool
+    controller_id: quietcool_controller
+    kind: last_rx_frame
+    name: "Last Valid RX Frame"
+    disabled_by_default: true
+
+  - platform: quietcool
+    id: last_confirmed_state_text
+    controller_id: quietcool_controller
+    kind: last_confirmed_state
+    name: "Last Confirmed Fan State"
+    disabled_by_default: true
+
+  - platform: quietcool
+    controller_id: quietcool_controller
+    kind: speed_capability
+    name: "Fan Speed Capability"
+    disabled_by_default: true
+
+  - platform: wifi_info
+
+    ip_address:
+      id: wifi_ip
+      name: "IP Address"
+
+      web_server:
+        sorting_weight: 40
+
+    ssid:
+      id: wifi_ssid_connected
+      name: "Connected WiFi"
+
+      web_server:
+        sorting_weight: 41
+
+    # BSSID identifies the actual access point, even when several APs
+    # broadcast the same SSID. ESPHome updates this on Wi-Fi changes.
+    bssid:
+      id: wifi_connected_bssid
+      name: "Connected Access Point (BSSID)"
+      entity_category: diagnostic
+      web_server:
+        sorting_weight: 44
+
+
+# ============================================================
+# SENSORS
+# ============================================================
+
+sensor:
+  - platform: quietcool
+    id: timer_remaining_min
+    controller_id: quietcool_controller
+    kind: timer_remaining
+    name: "Timer Remaining"
+
+    web_server:
+      sorting_weight: 3
+
+  - platform: quietcool
+    id: rf_tx_count
+    controller_id: quietcool_controller
+    kind: tx_count
+    name: "TX Count"
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: qc_rf_health_group
+      sorting_weight: 3
+
+  - platform: quietcool
+    id: rf_rx_valid_count
+    controller_id: quietcool_controller
+    kind: rx_valid_count
+    name: "RX Valid Count"
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: qc_rf_health_group
+      sorting_weight: 4
+    on_value:
+      then:
+        - lambda: |-
+            if (x > id(qc_prev_valid_rx_count))
+              id(qc_last_valid_rx_ms) = millis();
+            id(qc_prev_valid_rx_count) = x;
+
+  - platform: quietcool
+    id: rf_rx_rejected_count
+    controller_id: quietcool_controller
+    kind: rx_rejected_count
+    name: "RX Rejected Count"
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: qc_rf_health_group
+      sorting_weight: 5
+
+  - platform: template
+    name: "Seconds Since Valid RF"
+    unit_of_measurement: "s"
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    update_interval: 10s
+    lambda: |-
+      if (!id(qc_last_valid_rx_ms)) return NAN;
+      return (float)((millis() - id(qc_last_valid_rx_ms)) / 1000UL);
+    web_server:
+      sorting_group_id: qc_rf_health_group
+      sorting_weight: 2
+
+  - platform: template
+    name: "WiFi Connects Since Boot"
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    update_interval: 15s
+    lambda: |-
+      return (float)id(qc_wifi_connect_count);
+    web_server:
+      sorting_group_id: qc_wifi_history_group
+      sorting_weight: 1
+
+  - platform: template
+    name: "WiFi Disconnects Since Boot"
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    update_interval: 15s
+    lambda: |-
+      return (float)id(qc_wifi_disconnect_count);
+    web_server:
+      sorting_group_id: qc_wifi_history_group
+      sorting_weight: 2
+
+  - platform: debug
+    free:
+      id: qc_debug_free_heap
+      name: "ESP32 Free Heap"
+      entity_category: diagnostic
+      web_server:
+        sorting_group_id: qc_system_health_group
+        sorting_weight: 1
+    min_free:
+      name: "ESP32 Minimum Free Heap"
+      entity_category: diagnostic
+      web_server:
+        sorting_group_id: qc_system_health_group
+        sorting_weight: 2
+    block:
+      name: "ESP32 Largest Free Block"
+      entity_category: diagnostic
+      web_server:
+        sorting_group_id: qc_system_health_group
+        sorting_weight: 3
+    loop_time:
+      id: qc_debug_loop_ms
+      name: "ESP32 Maximum Loop Time"
+      entity_category: diagnostic
+      web_server:
+        sorting_group_id: qc_system_health_group
+        sorting_weight: 4
+
+  - platform: wifi_signal
+    id: wifi_signal_sensor
+    name: "WiFi Signal"
+    update_interval: 60s
+
+    web_server:
+      sorting_weight: 42
+
+  # Actual channel of the AP the ESP32 is currently using.
+  # Do not force a specific Wi-Fi channel in the wifi: configuration.
+  - platform: template
+    id: wifi_connected_channel
+    name: "Connected Access Point Channel"
+    entity_category: diagnostic
+    accuracy_decimals: 0
+    update_interval: 15s
+    lambda: |-
+      if (!id(wifi_component).is_connected()) return NAN;
+      return (float) id(wifi_component).get_wifi_channel();
+
+    web_server:
+      sorting_weight: 45
+
+  - platform: uptime
+    name: "Uptime"
+
+    web_server:
+      sorting_weight: 43
+
+
+# ============================================================
+# BUTTONS
+# ============================================================
+
+button:
+  - platform: quietcool
+    id: refresh_fan_button
+    controller_id: quietcool_controller
+    kind: refresh
+    name: "Refresh Fan State"
+
+    web_server:
+      sorting_weight: 6
+
+  - platform: quietcool
+    id: quietcool_learn_internal
+    controller_id: quietcool_controller
+    kind: learn
+    internal: true
+
+  - platform: template
+    id: learn_remote_button
+    name: "Learn Remote ID"
+    icon: "mdi:remote"
+
+    web_server:
+      sorting_weight: 4
+
+    on_press:
+      then:
+        - lambda: |-
+            std::string rid = "";
+
+            if (id(remote_sender_id).has_state()) {
+              rid = id(remote_sender_id).state;
+            }
+
+            if (rid.find("CB") != std::string::npos) {
+              id(pairing_active) = false;
+              id(pairing_result) = 3;
+              id(pairing_result_started_ms) = millis();
+            } else {
+              id(pairing_active) = true;
+              id(pairing_started_ms) = millis();
+              id(pairing_result) = 0;
+            }
+
+        - if:
+            condition:
+              lambda: |-
+                return id(pairing_active);
+
+            then:
+              - button.press: quietcool_learn_internal
+
+  - platform: quietcool
+    id: forget_remote_button
+    controller_id: quietcool_controller
+    kind: forget
+    name: "Forget Remote ID"
+
+    web_server:
+      sorting_weight: 5
+
+  # The visible web/HA Restart button still performs a normal reboot.
+  # ESPHome buttons cannot detect browser press-and-hold/release events.
+  - platform: restart
+    name: "Restart QuietCool Controller"
+
+    web_server:
+      sorting_weight: 99
+
+  # Tap once to start a 10s countdown on the OLED, tap again to cancel.
+  # At 0 it will automatically factory-reset the device.
+  - platform: template
+    id: web_factory_reset_button
+    name: "Factory Reset - 10 Second Countdown (Tap Again to Cancel)"
+    icon: "mdi:restore-alert"
+    web_server:
+      sorting_weight: 98
+    on_press:
+      then:
+        - if:
+            condition:
+              lambda: 'return id(web_reset_active);'
+            then:
+              - lambda: |-
+                  id(web_reset_active) = false;
+                  ESP_LOGI("quietcool.reset", "Web reset countdown CANCELLED");
+              - component.update: oled_display
+            else:
+              - lambda: |-
+                  id(web_reset_active) = true;
+                  id(web_reset_started_ms) = millis();
+                  ESP_LOGW("quietcool.reset", "Web factory-reset countdown STARTED (10s)");
+              - switch.turn_on: oled_display_switch
+              - component.update: oled_display
+
+  # Only a completed web-UI countdown can trigger this internal action.
+  - platform: factory_reset
+    id: factory_reset_internal
+    internal: true
+
+  # Web-only recovery button: reuse the existing safe Refresh Fan State action.
+  # Do not blindly repeat any previous ON/OFF/speed command.
+  - platform: template
+    name: "RF Recovery - Recheck Fan State"
+    icon: "mdi:refresh"
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: qc_rf_health_group
+      sorting_weight: 6
+    on_press:
+      - button.press: refresh_fan_button
+
+
+# ============================================================
+# OLED FONTS
+# ============================================================
+
+font:
+  - file: "gfonts://Roboto"
+    id: oled_title
+    size: 15
+
+  - file: "gfonts://Roboto"
+    id: oled_text
+    size: 11
+
+  - file: "gfonts://Roboto"
+    id: oled_small
+    size: 9
+
+
+# ============================================================
+# OLED DISPLAY
+# ============================================================
+
+display:
+  - platform: ssd1306_i2c
+    id: oled_display
+
+    model: "SSD1306 128x64"
+    address: 0x3C
+    update_interval: 500ms
+
+    lambda: |-
+      const uint32_t now = millis();
+
+      // Publish an OLED text mirror to ESPHome's EXISTING web interface.
+      // Never republish identical values: keeps RAM/network/SSE traffic low.
+      auto mirror = [&](const std::string &head,
+                        const std::string &r1, const std::string &r2,
+                        const std::string &r3, const std::string &r4,
+                        const std::string &r5) {
+        if (!id(oled_mirror_header).has_state() || id(oled_mirror_header).state != head)
+          id(oled_mirror_header).publish_state(head);
+        if (!id(oled_mirror_row_1).has_state() || id(oled_mirror_row_1).state != r1)
+          id(oled_mirror_row_1).publish_state(r1);
+        if (!id(oled_mirror_row_2).has_state() || id(oled_mirror_row_2).state != r2)
+          id(oled_mirror_row_2).publish_state(r2);
+        if (!id(oled_mirror_row_3).has_state() || id(oled_mirror_row_3).state != r3)
+          id(oled_mirror_row_3).publish_state(r3);
+        if (!id(oled_mirror_row_4).has_state() || id(oled_mirror_row_4).state != r4)
+          id(oled_mirror_row_4).publish_state(r4);
+        if (!id(oled_mirror_row_5).has_state() || id(oled_mirror_row_5).state != r5)
+          id(oled_mirror_row_5).publish_state(r5);
+      };
+
+      // Use the same formatted strings for the physical OLED and web view.
+      auto fmt = [](const char *format, auto... args) -> std::string {
+        char output[128];
+        snprintf(output, sizeof(output), format, args...);
+        return std::string(output);
+      };
+
+      // Render and publish status regardless of the physical OLED power state.
+      // SSD1306::turn_off() blanks the panel; its update lambda still runs,
+      // allowing the main web UI mirror to keep rotating while the OLED is off.
+
+      // ======================================================
+      // FACTORY RESET: Web UI. Tap once to start, tap again to cancel.
+      // ======================================================
+      if (id(web_reset_active)) {
+        const uint32_t elapsed = now - id(web_reset_started_ms);
+        const uint32_t seconds_left = elapsed >= 10000UL
+          ? 0U : (10000UL - elapsed + 999UL) / 1000UL;
+
+        it.printf(64, 0, id(oled_title), TextAlign::TOP_CENTER, "QuietCool");
+        it.printf(64, 17, id(oled_text), TextAlign::TOP_CENTER, "FACTORY RESET");
+        it.printf(64, 29, id(oled_title), TextAlign::TOP_CENTER,
+                  "%u", (unsigned) seconds_left);
+        it.printf(64, 50, id(oled_small), TextAlign::TOP_CENTER,
+                  seconds_left == 0 ? "RESETTING..." : "Tap again to CANCEL");
+        mirror("QuietCool", "FACTORY RESET",
+               fmt("%u seconds", (unsigned) seconds_left),
+               seconds_left == 0 ? "RESETTING..." : "Tap again to CANCEL",
+               "", "");
+        return;
+      }
+
+      // ======================================================
+      // PAIRING TIMEOUT
+      // ======================================================
+
+      if (
+        id(pairing_active) &&
+        (now - id(pairing_started_ms) >= 60000)
+      ) {
+        id(pairing_active) = false;
+        id(pairing_result) = 2;
+        id(pairing_result_started_ms) = now;
+      }
+
+      // ======================================================
+      // PAIRING MODE
+      // ======================================================
+
+      if (id(pairing_active)) {
+
+        uint32_t elapsed =
+          (now - id(pairing_started_ms)) / 1000;
+
+        uint32_t remaining =
+          elapsed < 60 ? 60 - elapsed : 0;
+
+        it.printf(
+          64,
+          0,
+          id(oled_title),
+          TextAlign::TOP_CENTER,
+          "QuietCool"
+        );
+
+        it.printf(
+          64,
+          17,
+          id(oled_title),
+          TextAlign::TOP_CENTER,
+          "PAIRING MODE"
+        );
+
+        it.printf(
+          64,
+          35,
+          id(oled_small),
+          TextAlign::TOP_CENTER,
+          "Press Fan Remote"
+        );
+
+        it.printf(
+          64,
+          45,
+          id(oled_small),
+          TextAlign::TOP_CENTER,
+          "3 Times - 1 sec apart"
+        );
+
+        it.printf(
+          64,
+          55,
+          id(oled_small),
+          TextAlign::TOP_CENTER,
+          "%u seconds left",
+          (unsigned) remaining
+        );
+
+        mirror("QuietCool", "PAIRING MODE", "Press Fan Remote",
+               "3 Times - 1 sec apart",
+               fmt("%u seconds left", (unsigned) remaining), "");
+        return;
+      }
+
+      // ======================================================
+      // PAIRING SUCCESS
+      // ======================================================
+
+      if (
+        id(pairing_result) == 1 &&
+        now - id(pairing_result_started_ms) < 5000
+      ) {
+
+        it.printf(
+          64,
+          0,
+          id(oled_title),
+          TextAlign::TOP_CENTER,
+          "QuietCool"
+        );
+
+        it.printf(
+          64,
+          20,
+          id(oled_title),
+          TextAlign::TOP_CENTER,
+          "LEARNED"
+        );
+
+        it.printf(
+          64,
+          38,
+          id(oled_text),
+          TextAlign::TOP_CENTER,
+          "ID SAVED"
+        );
+
+        if (id(remote_sender_id).has_state()) {
+          it.printf(
+            64,
+            52,
+            id(oled_small),
+            TextAlign::TOP_CENTER,
+            "%s",
+            id(remote_sender_id).state.c_str()
+          );
+        }
+
+        mirror("QuietCool", "LEARNED", "ID SAVED",
+               id(remote_sender_id).has_state() ? id(remote_sender_id).state : "",
+               "", "");
+        return;
+      }
+
+      // ======================================================
+      // PAIRING FAILED
+      // ======================================================
+
+      if (
+        id(pairing_result) == 2 &&
+        now - id(pairing_result_started_ms) < 5000
+      ) {
+
+        it.printf(
+          64,
+          0,
+          id(oled_title),
+          TextAlign::TOP_CENTER,
+          "QuietCool"
+        );
+
+        it.printf(
+          64,
+          22,
+          id(oled_title),
+          TextAlign::TOP_CENTER,
+          "PAIRING FAILED"
+        );
+
+        it.printf(
+          64,
+          45,
+          id(oled_text),
+          TextAlign::TOP_CENTER,
+          "Try Again"
+        );
+
+        mirror("QuietCool", "PAIRING FAILED", "Try Again", "", "", "");
+        return;
+      }
+
+      // ======================================================
+      // ALREADY PAIRED
+      // ======================================================
+
+      if (
+        id(pairing_result) == 3 &&
+        now - id(pairing_result_started_ms) < 5000
+      ) {
+
+        it.printf(
+          64,
+          0,
+          id(oled_title),
+          TextAlign::TOP_CENTER,
+          "QuietCool"
+        );
+
+        it.printf(
+          64,
+          22,
+          id(oled_title),
+          TextAlign::TOP_CENTER,
+          "ALREADY PAIRED"
+        );
+
+        it.printf(
+          64,
+          45,
+          id(oled_text),
+          TextAlign::TOP_CENTER,
+          "Forget First"
+        );
+
+        mirror("QuietCool", "ALREADY PAIRED", "Forget First", "", "", "");
+        return;
+      }
+
+      // ======================================================
+      // FALLBACK WIFI SETUP MODE
+      // ======================================================
+
+      if (
+        !id(wifi_component).is_connected() &&
+        (now - id(boot_time_ms) >= 30000)
+      ) {
+
+        it.printf(
+          64,
+          0,
+          id(oled_title),
+          TextAlign::TOP_CENTER,
+          "QuietCool"
+        );
+
+        it.printf(
+          64,
+          16,
+          id(oled_title),
+          TextAlign::TOP_CENTER,
+          "SETUP MODE"
+        );
+
+        it.printf(
+          64,
+          34,
+          id(oled_small),
+          TextAlign::TOP_CENTER,
+          "SSID: QuietCool Fallback"
+        );
+
+        it.printf(
+          64,
+          44,
+          id(oled_small),
+          TextAlign::TOP_CENTER,
+          "P/W: quietcool"
+        );
+
+        it.printf(
+          64,
+          54,
+          id(oled_small),
+          TextAlign::TOP_CENTER,
+          "Open: 192.168.4.1"
+        );
+
+        mirror("QuietCool", "SETUP MODE", "SSID: QuietCool Fallback",
+               "P/W: quietcool", "Open: 192.168.4.1", "");
+        return;
+      }
+
+      // ======================================================
+      // DIAGNOSTIC OLED PAGES: each row is drawn AND mirrored verbatim.
+      // v5.4: duration is selectable in the WEB UI; no extra OLED rows.
+      // OLED and web mirror continue to share the same page-selection logic.
+      const auto rotate_choice = id(qc_oled_rotate_interval).current_option();
+      const uint32_t rotate_ms = rotate_choice == "5 seconds" ? 5000UL
+        : rotate_choice == "15 seconds" ? 15000UL
+        : rotate_choice == "30 seconds" ? 30000UL : 10000UL;
+      uint8_t page = (now / rotate_ms) % 4U;
+      if (!id(oled_auto_rotate).state) {
+        const auto choice = id(oled_manual_page).current_option();
+        if      (choice == "RF Diagnostics") page = 1;
+        else if (choice == "Network")        page = 2;
+        else if (choice == "Command Status") page = 3;
+        else                                 page = 0;
+      }
+
+      const bool state_known = id(fan_state_known).has_state() && id(fan_state_known).state;
+      const bool wifi_up = id(wifi_component).is_connected();
+      const char *fault = !id(controller_fault).has_state() ? "Unknown"
+                        : id(controller_fault).state ? "ACTIVE" : "None";
+      const char *status = id(command_status).has_state()
+                         ? id(command_status).state.c_str() : "N/A";
+      const char *evidence = id(evidence_source).has_state()
+                           ? id(evidence_source).state.c_str() : "N/A";
+
+      std::string head, r1, r2, r3, r4, r5;
+      if (page == 0) {
+        head = "QuietCool";
+        if (!state_known) r1 = "Fan: Unknown";
+        else if (!id(whole_house_fan).state) r1 = "Fan: OFF";
+        else r1 = fmt("Fan: ON  Speed: %d", (int)id(whole_house_fan).speed);
+
+        r2 = id(timer_remaining_min).has_state()
+          ? fmt("Timer left: %.0f min", id(timer_remaining_min).state)
+          : "Timer left: Unknown";
+        r3 = wifi_up ? "WiFi: Connected" : "WiFi: Connecting";
+        if (id(rx_frame_count) > 0 && now - id(last_rx_ms) < 750UL)
+          r4 = "RF: Receiving";
+        else if (id(last_tx_ms) > 0 && now - id(last_tx_ms) < 750UL)
+          r4 = "RF: Transmitting";
+        else r4 = "RF: Ready";
+        r5 = fmt("Status: %.17s", status);
+      } else if (page == 1) {
+        head = "RF Diagnostics";
+        r1 = id(rf_tx_count).has_state() && id(rf_rx_valid_count).has_state()
+           ? fmt("TX: %.0f   RX OK: %.0f", id(rf_tx_count).state, id(rf_rx_valid_count).state)
+           : "TX / RX OK: N/A";
+        r2 = id(rf_rx_rejected_count).has_state()
+           ? fmt("RX rejected: %.0f", id(rf_rx_rejected_count).state)
+           : "RX rejected: N/A";
+        r3 = id(rx_frame_count) > 0
+           ? fmt("Last RF: %lus ago", (unsigned long)((now - id(last_rx_ms)) / 1000UL))
+           : "Last RF: None yet";
+        r4 = fmt("Cmd: %.20s", status);
+        r5 = fmt("Fault: %s", fault);
+      } else if (page == 2) {
+        head = "Network";
+        const char *ssid = wifi_up && id(wifi_ssid_connected).has_state()
+                         ? id(wifi_ssid_connected).state.c_str() : "Not connected";
+        const char *ip = wifi_up && id(wifi_ip).has_state()
+                       ? id(wifi_ip).state.c_str() : "N/A";
+        const char *bssid = wifi_up && id(wifi_connected_bssid).has_state()
+                            ? id(wifi_connected_bssid).state.c_str() : "N/A";
+        r1 = fmt("SSID: %.19s", ssid);
+        // MAC identifies the exact connected AP; the full value is also
+        // available in the web UI, even if a long line clips on the OLED.
+        r2 = fmt("AP: %.17s", bssid);
+        r3 = fmt("IP: %.21s", ip);
+        if (wifi_up) {
+          const int channel = (int) id(wifi_component).get_wifi_channel();
+          r4 = id(wifi_signal_sensor).has_state()
+             ? fmt("RSSI:%.0f CH:%d", id(wifi_signal_sensor).state, channel)
+             : fmt("WiFi: N/A  CH: %d", channel);
+        } else {
+          r4 = "WiFi: offline";
+        }
+        // API-client status also includes log viewers; not exclusively HA.
+        const bool paired = id(remote_sender_id).has_state() &&
+          id(remote_sender_id).state.find("CB") != std::string::npos;
+        r5 = fmt("API:%s  REM:%s", id(quietcool_api).is_connected() ? "ON" : "OFF",
+                 paired ? "YES" : "NO");
+      } else {
+        head = "Fan Command";
+        const char *last_cmd = id(last_tx_command_text).has_state()
+                             ? id(last_tx_command_text).state.c_str() : "N/A";
+        const char *confirmed = id(last_confirmed_state_text).has_state()
+                              ? id(last_confirmed_state_text).state.c_str() : "N/A";
+        r1 = fmt("Last TX: %.17s", last_cmd);
+        r2 = fmt("Status: %.17s", status);
+        r3 = fmt("Evidence: %.16s", evidence);
+        r4 = fmt("Confirmed: %.15s", confirmed);
+        r5 = fmt("Fault: %s", fault);
+      }
+
+      // All six strings are the same ones drawn to the physical OLED.
+      mirror(fmt("%s  %u/4", head.c_str(), (unsigned)(page + 1)),
+             r1, r2, r3, r4, r5);
+      it.print(0, 0, id(oled_text), head.c_str());
+      it.printf(127, 2, id(oled_small), TextAlign::TOP_RIGHT,
+                "%u/4", (unsigned)(page + 1));
+      it.line(0, 14, 127, 14);
+      it.print(0, 15, id(oled_small), r1.c_str());
+      it.print(0, 25, id(oled_small), r2.c_str());
+      it.print(0, 35, id(oled_small), r3.c_str());
+      it.print(0, 45, id(oled_small), r4.c_str());
+      it.print(0, 55, id(oled_small), r5.c_str());
+
+
+# ============================================================
+# SWITCHES
+# ============================================================
+
+switch:
+
+  # Four diagnostic OLED pages rotate every 10 seconds when enabled.
+  # Turn OFF to hold the page chosen by "OLED Page".
+  - platform: template
+    id: oled_auto_rotate
+    name: "OLED Auto Rotate"
+    icon: "mdi:monitor-dashboard"
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_ON
+    web_server:
+      sorting_group_id: qc_oled_settings_group
+      sorting_weight: 1
+
+  # OLED
+  - platform: template
+    name: "OLED Display"
+    id: oled_display_switch
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_ON
+
+    web_server:
+      sorting_weight: 7
+
+    turn_on_action:
+      - lambda: |-
+          id(oled_display).turn_on();
+      - component.update: oled_display
+
+    turn_off_action:
+      - lambda: |-
+          // Only blank the physical OLED. The web mirror stays live.
+          id(oled_display).turn_off();
+
+
+  # Green onboard LED
+  - platform: gpio
+    pin: GPIO25
+    id: board_led
+    name: "Board LED"
+    icon: "mdi:led-on"
+    restore_mode: ALWAYS_OFF
+
+    web_server:
+      sorting_weight: 8
+
+
+# ============================================================
+# WIFI LED STATUS
+#
+# WiFi disconnected:
+#   Green LED blinks.
+#
+# WiFi connected:
+#   Automation stops touching the LED.
+#   HA / Web UI has full manual control.
+# ============================================================
+
+interval:
+  # Web reset countdown. Hold the OLED at 0 for ~1 second so it is visible.
+  - interval: 200ms
+    then:
+      - if:
+          condition:
+            lambda: |-
+              return id(web_reset_active) &&
+                     (uint32_t)(millis() - id(web_reset_started_ms)) >= 11000UL;
+          then:
+            - lambda: |-
+                ESP_LOGW("quietcool.reset", "Web countdown finished: factory reset");
+                id(web_reset_active) = false;
+            - button.press: factory_reset_internal
+
+  - interval: 500ms
+    then:
+      - if:
+          condition:
+            lambda: |-
+              return !id(wifi_component).is_connected();
+
+          then:
+            - switch.toggle: board_led
