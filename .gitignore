@@ -1,0 +1,11 @@
+# Credentials and ESPHome build output
+secrets.yaml
+**/secrets.yaml
+.esphome/
+.pioenvs/
+.piolibdeps/
+__pycache__/
+*.pyc
+.DS_Store
+.env
+*.log
